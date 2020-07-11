@@ -5,118 +5,146 @@ Created on Sat Jul  4 15:31:51 2020
 @author: sharm
 """
 
-import stegano
-from stegano import lsb
-#System
-import cv2
-import os,os.path
-from PIL import Image
-#Basic libraries
-import pandas as pd
-import numpy as np
-# discrete cosine tranform
-from numpy import pi
-from numpy import r_
-import scipy
-from scipy import fftpack
-import random
-import seaborn as sns
-import matplotlib.image as mpimg
+import os
+import skimage.io as sk
 import matplotlib.pyplot as plt
-from tqdm.notebook import tqdm
-# sklearn
-from sklearn.model_selection import KFold
-from sklearn import metrics
-#pytorch
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch import FloatTensor, LongTensor
-from torch.utils.data import Dataset,DataLoader
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-import torch.nn.functional as F
+from scipy import spatial
+from tqdm import tqdm
+from PIL import Image
+from random import shuffle
+import numpy as np 
+import pandas as pd 
 
-# Data augmentation for image preprocessing
-from albumentations import (ToFloat, Normalize, VerticalFlip, HorizontalFlip, 
-                            Compose, Resize, RandomBrightness, RandomContrast, HueSaturationValue, Blur, GaussNoise)
 
-from albumentations.pytorch import ToTensorV2, ToTensor
-from efficientnet_pytorch import EfficientNet
-from torchvision.models import resnet34
+# Data pre processing and reading files and splutting training and testing data set
+BASE_PATH = "D:/Kaggle Project"
+train_imageids = pd.Series(os.listdir(BASE_PATH + '/Cover')).sort_values(ascending=True).reset_index(drop=True)
+test_imageids = pd.Series(os.listdir(BASE_PATH + '/Test')).sort_values(ascending=True).reset_index(drop=True)
 
-import warnings
-warnings.filterwarnings("ignore")
+cover_images_path = pd.Series(BASE_PATH + '/Cover/' + train_imageids ).sort_values(ascending=True)
+JMIPOD_images_path = pd.Series(BASE_PATH + '/JMiPOD/'+train_imageids).sort_values(ascending=True)
+JUNIWARD_images_path = pd.Series(BASE_PATH + '/JUNIWARD/'+train_imageids).sort_values(ascending=True)
+UERD_images_path = pd.Series(BASE_PATH + '/UERD/'+train_imageids).sort_values(ascending=True)
+test_images_path = pd.Series(BASE_PATH + '/Test/'+test_imageids).sort_values(ascending=True)
+ss = pd.read_csv(f'{BASE_PATH}/sample_submission.csv')
 
-# EDA and reading the data
-base_path = 'D:\Kaggle Project'
 
-def read_images_path(dir_name = 'Cover',test = False):
-    series_name = pd.Series(os.listdir(base_path + '/' + dir_name))
-    if test:
-        series_name = pd.Series(os.listdir(base_path + '/' + 'Test'))
-        
-    series_paths = pd.Series(base_path + '/' + dir_name + '/' + series_name)
+final = []
+def create_labels(cover,jmipod,juniward,uerd,image_id):
+    image = sk.imread(cover)
+    jmipodimg = sk.imread(jmipod)
+    juniward = sk.imread(juniward)
+    uerd = sk.imread(uerd)
     
-    return series_paths
-
-# Read in the data
-cover_paths = read_images_path('Cover', False)
-jmipod_paths = read_images_path('JMiPOD', False)
-juniward_paths = read_images_path('JUNIWARD', False)
-uerd_paths = read_images_path('UERD', False)
-test_paths = read_images_path('Test', True)
-
-
-def show15(title = "Default"):
-    plt.figure(figsize=(16,9))
-    plt.suptitle(title, fontsize = 16)
     
-    for k, path in enumerate(cover_paths[:15]):
-        cover = mpimg.imread(path)
-        
-        plt.subplot(3, 5, k+1)
-        plt.imshow(cover)
-        plt.axis('off')
-        
-image_sample = mpimg.imread(cover_paths[0])
-
-print('Image sample shape:', image_sample.shape)
-print('Image sample size:', image_sample.size)
-print('Image sample data type:', image_sample.dtype)
-
-
-def show_images_alg(n=3,title = "Default"):
-    f,ax = plt.subplots(n,4,figsize=(16,7))
-    plt.suptitle(title,fontsize=16)
+    vec1 = np.reshape(image,(512*512*3))
+    vec2 = np.reshape(jmipodimg,(512*512*3))
+    vec3 = np.reshape(juniward,(512*512*3))
+    vec4 = np.reshape(uerd,(512*512*3))
     
-    for k,path in enumerate(cover_paths[:15]):
-        cover = mpimg.imread(path)
-        
-        plt.subplot(3,5,k+1)
-        plt.imshow(cover)
-        plt.axis('off')
-        
-show15(title= "15 original images")
-
-# algorithms
-# JMiPOD, juniward and uerd
-
-def show_images_alg(n=3,title = "Default"):
+    cos1 = spatial.distance.cosine(vec1,vec2)
+    cos2 = spatial.distance.cosine(vec1,vec3)
+    cos3 = spatial.distance.cosine(vec1,vec4)
+    final.append({'image_id':image_id,'jmipod':cos1,'juniward':cos2,'uerd':cos3})
     
-    f,ax = plt.subplots(n,4,figsize=(16,7))
-    plt.suptitle(title,fontsize=16)
+for k in tqdm(range(30000)):
+    create_labels(cover_images_path[k],JMIPOD_images_path[k],JUNIWARD_images_path[k],UERD_images_path[k],train_imageids[k])
     
-    for index in range(n):
-        cover = mpimg.imread(cover_paths[index])
-        ipod = mpimg.imread(jmipod_paths[index])
-        juni = mpimg.imread(juniward_paths[index])
-        uerd = mpimg.imread(uerd_paths[index])
+
+train_temp =pd.DataFrame(final)
+train_temp.head()
+
+def sigmoid(X):
+    return 1/(1+np.exp(-X))
+
+train_temp['jmipod'] = train_temp['jmipod'].apply(lambda x:sigmoid(x))
+train_temp['juniward'] = train_temp['juniward'].apply(lambda x:sigmoid(x))
+train_temp['uerd'] = train_temp['uerd'].apply(lambda x:sigmoid(x))
+
+train_temp.head()
+
+IMG_SIZE = 300
+def load_training_data():
+  train_data = []
+  data_paths = [cover_images_path,JUNIWARD_images_path,JMIPOD_images_path,UERD_images_path]
+  labels = [np.zeros(train_temp.shape[0]),train_temp['juniward'],train_temp['jmipod'],train_temp['uerd']]
+  for i,image_path in enumerate(data_paths):
+    for j,img in enumerate(image_path[:10000]):
+        label = labels[i][j]
+        img = Image.open(img)
+        img = img.convert('L')
+        img = img.resize((IMG_SIZE, IMG_SIZE), Image.ANTIALIAS)
+        train_data.append([np.array(img), label])
         
-        
-        # plot
-        ax[index, 0].imshow(cover)
-        ax[index,1].imshow(ipod)
-        ax[index,2].imshow(juni)
-        ax[index,3].imshow(uerd)
-        
-show_images_alg(n=3,title="Algorithm Difference")
+  shuffle(train_data)
+  return train_data
+
+def load_test_data():
+    test_data = []
+    for img in test_images_path:
+        img = Image.open(img)
+        img = img.convert('L')
+        img = img.resize((IMG_SIZE, IMG_SIZE), Image.ANTIALIAS)
+        test_data.append([np.array(img)])
+            
+    return test_data
+
+train = load_training_data()
+
+len(train)
+
+plt.imshow(train[115][0], cmap = 'gist_gray')
+
+trainImages = np.array([i[0] for i in train]).reshape(-1, IMG_SIZE, IMG_SIZE, 1)
+trainLabels = np.array([i[1] for i in train])
+
+
+# building model after processing the data set
+import keras
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Flatten
+from keras.layers import Conv2D, MaxPooling2D
+from keras.layers. normalization import BatchNormalization
+
+model = Sequential()
+model.add(Conv2D(32,kernal_size=(3,3),activation='relu',input_shape=(IMG_SIZE,IMG_SIZE,1)))
+model.add(MaxPooling2D(pool_size=(2,2)))
+model.add(BatchNormalization())
+model.add(Conv2D(64, kernel_size=(3,3), activation='relu'))
+model.add(MaxPooling2D(pool_size=(2,2)))
+model.add(BatchNormalization())
+model.add(Conv2D(64, kernel_size=(3,3), activation='relu'))
+model.add(MaxPooling2D(pool_size=(2,2)))
+model.add(BatchNormalization())
+model.add(Conv2D(96, kernel_size=(3,3), activation='relu'))
+model.add(MaxPooling2D(pool_size=(2,2)))
+model.add(BatchNormalization())
+model.add(Conv2D(32, kernel_size=(3,3), activation='relu'))
+model.add(MaxPooling2D(pool_size=(2,2)))
+model.add(BatchNormalization())
+model.add(Dropout(0.2))
+model.add(Flatten())
+model.add(Dense(128, activation='relu'))
+model.add(Dense(1))
+
+
+model.compile(loss='mean_squared_error',optimizer='adam',metrics=['mean_squared_error'])
+
+print(model.summary())
+
+model.fit(trainImages,trainLabels,batch_size=100,epochs=3,verbose=1)
+
+test = load_test_data()
+testImages = np.array([i[0] for i in test]).reshape(-1,IMG_SIZE,IMG_SIZE,1)
+predict = model.predict(testImages,batch_size=100)
+
+ss['Label'] =predict
+ss.to_csv('submission.csv',index=False)
+train_temp.to_csv('train.csv',index=False)
+
+
+
+
+
+
+    
